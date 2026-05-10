@@ -1,0 +1,26 @@
+{
+  "name": "pi-lsp-lite",
+  "version": "0.1.0",
+  "description": "Tightly scoped pi extension: feeds LSP diagnostics back to the agent after every write/edit. Go and Rust to start.",
+  "type": "module",
+  "private": false,
+  "license": "MIT",
+  "keywords": ["pi-package", "pi-extension", "lsp", "gopls", "rust-analyzer"],
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "dependencies": {
+    "vscode-languageserver-protocol": "^3.17.5"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0"
+  },
+  "scripts": {
+    "check": "tsc --noEmit"
+  }
+}
