@@ -9,7 +9,8 @@ pi-lsp-lite is a [pi extension](https://github.com/mariozechner/pi) that hooks i
 ```
 index.ts               → extension entry point
 src/
-  languages.ts         → language server config registry
+  config.ts            → config file loading and merge
+  languages.ts         → built-in language server defaults
   client.ts            → LSP protocol client (JSON-RPC over stdio)
   server-manager.ts    → server lifecycle and edit orchestration
   format.ts            → diagnostic formatting for agent consumption
@@ -64,6 +65,22 @@ Before sending a change, the client snapshots diagnostic counts for all tracked 
 - Init failure: disables only that specific root (serverKey), other roots unaffected
 - Both return `status: "unavailable"` so the agent isn't told the file is clean when it's actually unchecked
 
+## Configuration loading
+
+Config is loaded in two layers at `session_start`:
+
+1. **Built-in defaults** from `src/languages.ts` (go, rust, typescript)
+2. **Global config** from `~/.pi-lsp-lite.json`
+3. **Project config** from `.pi-lsp-lite.json` or `.pi/lsp-lite.json` in the session's cwd
+
+Each layer merges over the previous:
+- New server IDs are added
+- Existing server IDs are partially overridden (only specified fields change)
+- `"disabled": true` removes the server entirely
+- Timeout overrides (`diagnosticTimeout`, `documentIdleTimeout`) cascade from global to per-server
+
+Config is not hot-reloaded — `/reload` picks up changes via `session_start`.
+
 ## Extension hooks used
 
 | Hook | Purpose |
@@ -74,15 +91,18 @@ Before sending a change, the client snapshots diagnostic counts for all tracked 
 
 ## Adding a language
 
-Add an entry to the `languages` array in `src/languages.ts`:
+For built-in defaults, add an entry to `builtinLanguages` in `src/languages.ts`. For user-added servers, create a `.pi-lsp-lite.json`:
 
-```typescript
+```json
 {
-  id: "python",
-  extensions: [".py"],
-  command: "pylsp",
-  args: [],
-  rootPatterns: ["pyproject.toml", "setup.py"],
+  "servers": {
+    "python": {
+      "extensions": [".py"],
+      "command": "pylsp",
+      "args": [],
+      "rootPatterns": ["pyproject.toml", "setup.py"]
+    }
+  }
 }
 ```
 

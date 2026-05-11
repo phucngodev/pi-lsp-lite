@@ -1,15 +1,32 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createServerManager } from "./src/server-manager.js";
-import { languageForFile, checkExtensionOverlaps } from "./src/languages.js";
+import { languageForFile, checkExtensionOverlaps, type LanguageServerConfig } from "./src/languages.js";
 import { formatDiagnostics } from "./src/format.js";
+import { loadConfig, type ResolvedConfig } from "./src/config.js";
 import { resolve, relative, isAbsolute } from "node:path";
 
 export default function (pi: ExtensionAPI) {
-  const manager = createServerManager();
+  let config: ResolvedConfig | null = null;
+  let servers: LanguageServerConfig[] = [];
+  let manager = createServerManager({});
 
-  for (const warning of checkExtensionOverlaps()) {
-    console.error(`[pi-lsp-lite] ${warning}`);
+  async function initConfig(cwd: string) {
+    config = await loadConfig(cwd);
+    servers = config.servers;
+    manager = createServerManager({
+      diagnosticTimeout: config.diagnosticTimeout,
+      documentIdleTimeout: config.documentIdleTimeout,
+      perServerTimeout: config.perServerTimeout,
+    });
+
+    for (const warning of checkExtensionOverlaps(servers)) {
+      console.error(`[pi-lsp-lite] ${warning}`);
+    }
   }
+
+  pi.on("session_start", async (_event, ctx) => {
+    await initConfig(ctx.cwd);
+  });
 
   pi.on("tool_result", async (event, ctx) => {
     if (event.toolName !== "write" && event.toolName !== "edit") return;
@@ -21,11 +38,11 @@ export default function (pi: ExtensionAPI) {
     const absolutePath = resolve(ctx.cwd, filePath);
     const rel = relative(ctx.cwd, absolutePath);
     if (!rel || rel.startsWith("..") || isAbsolute(rel)) return;
-    const config = languageForFile(absolutePath);
-    if (!config) return;
+    const langConfig = languageForFile(absolutePath, servers);
+    if (!langConfig) return;
 
     try {
-      const result = await manager.handleEdit(absolutePath, config, ctx.cwd);
+      const result = await manager.handleEdit(absolutePath, langConfig, ctx.cwd);
       const formatted = formatDiagnostics(filePath, result);
       if (!formatted) return;
 
@@ -45,18 +62,18 @@ export default function (pi: ExtensionAPI) {
 
   pi.registerCommand("lsp-status", {
     description: "Show running LSP servers and recent diagnostic counts",
-    handler: async (_args, ctx) => {
-      const servers = manager.status();
-      if (servers.length === 0) {
-        ctx.ui.notify("pi-lsp-lite: no servers running", "info");
+    handler: async (_args, _ctx) => {
+      const running = manager.status();
+      if (running.length === 0) {
+        _ctx.ui.notify("pi-lsp-lite: no servers running", "info");
         return;
       }
-      const lines = servers.map((s) => {
+      const lines = running.map((s) => {
         const idle = Math.round((Date.now() - s.lastActivity) / 1000);
         const up = Math.round(s.uptime / 1000);
         return `${s.id} (pid ${s.pid}) root=${s.root} — ${s.openDocuments} open files, up ${up}s, idle ${idle}s`;
       });
-      ctx.ui.notify(lines.join("\n"), "info");
+      _ctx.ui.notify(lines.join("\n"), "info");
     },
   });
 }

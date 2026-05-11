@@ -6,7 +6,7 @@ export interface LanguageServerConfig {
   rootPatterns: string[];
 }
 
-export const languages: LanguageServerConfig[] = [
+export const builtinLanguages: LanguageServerConfig[] = [
   {
     id: "go",
     extensions: [".go"],
@@ -30,15 +30,15 @@ export const languages: LanguageServerConfig[] = [
   },
 ];
 
-export function languageForFile(path: string): LanguageServerConfig | undefined {
+export function languageForFile(path: string, configs: LanguageServerConfig[]): LanguageServerConfig | undefined {
   const lower = path.toLowerCase();
-  return languages.find((lang) => lang.extensions.some((ext) => lower.endsWith(ext)));
+  return configs.find((lang) => lang.extensions.some((ext) => lower.endsWith(ext)));
 }
 
-export function checkExtensionOverlaps(): string[] {
+export function checkExtensionOverlaps(configs: LanguageServerConfig[]): string[] {
   const warnings: string[] = [];
   const seen = new Map<string, string>();
-  for (const lang of languages) {
+  for (const lang of configs) {
     for (const ext of lang.extensions) {
       const existing = seen.get(ext);
       if (existing) {
