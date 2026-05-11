@@ -41,7 +41,8 @@ const SWEEP_INTERVAL_MS = 60_000;
 export function createServerManager(): ServerManager {
   const servers = new Map<string, ManagedServer>();
   const pending = new Map<string, Promise<ManagedServer | null>>();
-  const disabledLanguages = new Set<string>();
+  const disabledBinaries = new Set<string>();
+  const failedRoots = new Set<string>();
   let sweepTimer: ReturnType<typeof setInterval> | null = null;
 
   function startSweepTimer() {
@@ -73,26 +74,42 @@ export function createServerManager(): ServerManager {
     server.idleTimer = setTimeout(() => shutdownServer(server), IDLE_TIMEOUT_MS);
   }
 
+  async function killProcess(proc: ChildProcess): Promise<void> {
+    if (proc.exitCode !== null) return;
+    proc.kill("SIGTERM");
+    await new Promise<void>((resolve) => {
+      if (proc.exitCode !== null) {
+        resolve();
+        return;
+      }
+      const killTimer = setTimeout(() => {
+        proc.kill("SIGKILL");
+      }, 2000);
+      proc.once("exit", () => {
+        clearTimeout(killTimer);
+        resolve();
+      });
+    });
+  }
+
   async function shutdownServer(server: ManagedServer) {
     if (server.idleTimer) clearTimeout(server.idleTimer);
+    await server.client.shutdown();
+    await killProcess(server.process);
     if (servers.get(server.serverKey) === server) {
       servers.delete(server.serverKey);
-    }
-    try {
-      await server.client.shutdown();
-    } catch {
-      server.process.kill("SIGTERM");
     }
     if (servers.size === 0) stopSweepTimer();
   }
 
   async function spawnServer(config: LanguageServerConfig, root: string, serverKey: string): Promise<ManagedServer | null> {
-    if (disabledLanguages.has(config.id)) return null;
+    if (disabledBinaries.has(config.id)) return null;
+    if (failedRoots.has(serverKey)) return null;
 
     const binaryPath = await which(config.command);
     if (!binaryPath) {
       console.error(`[pi-lsp-lite:${config.id}] ${config.command} not found on PATH, disabling ${config.id}`);
-      disabledLanguages.add(config.id);
+      disabledBinaries.add(config.id);
       return null;
     }
 
@@ -122,8 +139,9 @@ export function createServerManager(): ServerManager {
     } catch (err) {
       clearTimeout(initTimer!);
       console.error(`[pi-lsp-lite:${config.id}:${root}] failed to initialize:`, err);
-      child.kill("SIGTERM");
-      disabledLanguages.add(config.id);
+      await killProcess(child);
+      client.shutdown().catch(() => {});
+      failedRoots.add(serverKey);
       return null;
     }
 
@@ -142,6 +160,7 @@ export function createServerManager(): ServerManager {
     };
 
     child.on("exit", () => {
+      if (server.idleTimer) clearTimeout(server.idleTimer);
       if (servers.get(serverKey) === server) {
         servers.delete(serverKey);
       }
@@ -159,7 +178,8 @@ export function createServerManager(): ServerManager {
     const existing = servers.get(serverKey);
     if (existing) return existing;
 
-    if (disabledLanguages.has(config.id)) return null;
+    if (disabledBinaries.has(config.id)) return null;
+    if (failedRoots.has(serverKey)) return null;
 
     const inflight = pending.get(serverKey);
     if (inflight) return inflight;
@@ -189,7 +209,7 @@ export function createServerManager(): ServerManager {
     async handleEdit(filePath: string, config: LanguageServerConfig, cwd: string): Promise<DiagnosticResult> {
       const root = await findWorkspaceRoot(filePath, config.rootPatterns, cwd);
       const server = await ensureServer(config, root);
-      if (!server) return { status: "ok", diagnostics: [], otherFiles: [] };
+      if (!server) return { status: "unavailable" as const, diagnostics: [], otherFiles: [] };
 
       // serialize edits per server to avoid concurrent waitForDiagnostics races
       const result = server.editQueue.then(

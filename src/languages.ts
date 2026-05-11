@@ -12,14 +12,14 @@ export const languages: LanguageServerConfig[] = [
     extensions: [".go"],
     command: "gopls",
     args: ["serve"],
-    rootPatterns: ["go.mod", "go.sum"],
+    rootPatterns: ["go.mod"],
   },
   {
     id: "rust",
     extensions: [".rs"],
     command: "rust-analyzer",
     args: [],
-    rootPatterns: ["Cargo.toml", "Cargo.lock"],
+    rootPatterns: ["Cargo.toml"],
   },
 ];
 

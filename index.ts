@@ -2,7 +2,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { createServerManager } from "./src/server-manager.js";
 import { languageForFile } from "./src/languages.js";
 import { formatDiagnostics } from "./src/format.js";
-import { resolve } from "node:path";
+import { resolve, relative, isAbsolute } from "node:path";
 
 export default function (pi: ExtensionAPI) {
   const manager = createServerManager();
@@ -15,6 +15,8 @@ export default function (pi: ExtensionAPI) {
     if (!filePath) return;
 
     const absolutePath = resolve(ctx.cwd, filePath);
+    const rel = relative(ctx.cwd, absolutePath);
+    if (!rel || rel.startsWith("..") || isAbsolute(rel)) return;
     const config = languageForFile(absolutePath);
     if (!config) return;
 

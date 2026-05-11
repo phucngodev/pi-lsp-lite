@@ -1,4 +1,4 @@
-import { DiagnosticSeverity, type Diagnostic } from "vscode-languageserver-protocol";
+import { DiagnosticSeverity } from "vscode-languageserver-protocol";
 import type { DiagnosticResult } from "./client.js";
 
 export function formatDiagnostics(filePath: string, result: DiagnosticResult): string {
@@ -7,12 +7,9 @@ export function formatDiagnostics(filePath: string, result: DiagnosticResult): s
   );
 
   if (relevant.length === 0 && result.status === "ok" && result.otherFiles.length === 0) return "";
+  if (result.status === "unavailable") return "";
 
-  if (relevant.length === 0 && result.status === "timeout") {
-    return `\n⚠ LSP diagnostics for ${filePath}: timed out waiting for response (results may be incomplete)`;
-  }
-
-  if (relevant.length === 0 && result.otherFiles.length > 0) {
+  if (relevant.length === 0 && result.status === "ok" && result.otherFiles.length > 0) {
     return `\n⚠ LSP diagnostics for ${filePath}: no issues${otherFilesFooter(result)}`;
   }
 
