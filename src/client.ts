@@ -24,7 +24,7 @@ export interface OtherFileDiagnostics {
 }
 
 export interface DiagnosticResult {
-  status: "ok" | "timeout";
+  status: "ok" | "timeout" | "unavailable";
   diagnostics: Diagnostic[];
   otherFiles: OtherFileDiagnostics[];
 }
@@ -37,6 +37,8 @@ export interface LspClient {
   waitForDiagnostics(uri: string, timeoutMs: number): Promise<DiagnosticResult>;
   shutdown(): Promise<void>;
 }
+
+const SHUTDOWN_TIMEOUT_MS = 5_000;
 
 function countDiagnostics(diags: Diagnostic[]): { errors: number; warnings: number } {
   let errors = 0;
@@ -60,21 +62,28 @@ export function createLspClient(child: ChildProcess): LspClient {
 
   interface DiagnosticEntry {
     diagnostics: Diagnostic[];
+    generation: number;
     received: boolean;
     resolve?: () => void;
   }
 
   const diagnosticsMap = new Map<string, DiagnosticEntry>();
   const documentVersion = new Map<string, number>();
+  const uriGeneration = new Map<string, number>();
 
   connection.onNotification(PublishDiagnosticsNotification.type, (params) => {
     const entry = diagnosticsMap.get(params.uri);
     if (entry) {
+      // only accept diagnostics for the current generation of this URI
+      const currentGen = uriGeneration.get(params.uri) ?? 0;
+      if (entry.generation !== currentGen) return;
       entry.diagnostics = params.diagnostics;
       entry.received = true;
       entry.resolve?.();
     } else {
-      diagnosticsMap.set(params.uri, { diagnostics: params.diagnostics, received: true });
+      // cross-file diagnostics for URIs we haven't opened — accept them
+      const gen = uriGeneration.get(params.uri) ?? 0;
+      diagnosticsMap.set(params.uri, { diagnostics: params.diagnostics, generation: gen, received: true });
     }
   });
 
@@ -106,8 +115,10 @@ export function createLspClient(child: ChildProcess): LspClient {
     },
 
     didOpen(uri: string, languageId: string, content: string) {
+      const gen = (uriGeneration.get(uri) ?? 0) + 1;
+      uriGeneration.set(uri, gen);
       documentVersion.set(uri, 1);
-      diagnosticsMap.set(uri, { diagnostics: [], received: false });
+      diagnosticsMap.set(uri, { diagnostics: [], generation: gen, received: false });
       connection.sendNotification(DidOpenTextDocumentNotification.type, {
         textDocument: { uri, languageId, version: 1, text: content },
       });
@@ -115,8 +126,10 @@ export function createLspClient(child: ChildProcess): LspClient {
 
     didChange(uri: string, content: string) {
       const version = (documentVersion.get(uri) ?? 1) + 1;
+      const gen = (uriGeneration.get(uri) ?? 0) + 1;
+      uriGeneration.set(uri, gen);
       documentVersion.set(uri, version);
-      diagnosticsMap.set(uri, { diagnostics: [], received: false });
+      diagnosticsMap.set(uri, { diagnostics: [], generation: gen, received: false });
       connection.sendNotification(DidChangeTextDocumentNotification.type, {
         textDocument: { uri, version },
         contentChanges: [{ text: content }],
@@ -124,6 +137,9 @@ export function createLspClient(child: ChildProcess): LspClient {
     },
 
     didClose(uri: string) {
+      // bump generation so any in-flight diagnostics for the old open are rejected
+      const gen = (uriGeneration.get(uri) ?? 0) + 1;
+      uriGeneration.set(uri, gen);
       connection.sendNotification(DidCloseTextDocumentNotification.type, {
         textDocument: { uri },
       });
@@ -132,6 +148,8 @@ export function createLspClient(child: ChildProcess): LspClient {
     },
 
     async waitForDiagnostics(uri: string, timeoutMs: number): Promise<DiagnosticResult> {
+      const targetGen = uriGeneration.get(uri) ?? 0;
+
       // snapshot diagnostic counts for all other tracked URIs before the edit settles
       const preSnapshot = new Map<string, { errors: number; warnings: number }>();
       for (const [trackedUri, entry] of diagnosticsMap) {
@@ -175,26 +193,34 @@ export function createLspClient(child: ChildProcess): LspClient {
           settle("timeout");
         }, timeoutMs);
 
-        const entry = diagnosticsMap.get(uri) ?? { diagnostics: [], received: false };
-        entry.resolve = () => {
-          clearTimeout(timeout);
-          settle("ok");
-        };
-        diagnosticsMap.set(uri, entry);
-
+        const entry = diagnosticsMap.get(uri) ?? { diagnostics: [], generation: targetGen, received: false };
         if (entry.received) {
           clearTimeout(timeout);
           settle("ok");
+        } else {
+          entry.resolve = () => {
+            clearTimeout(timeout);
+            settle("ok");
+          };
+          diagnosticsMap.set(uri, entry);
         }
       });
     },
 
     async shutdown() {
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        await connection.sendRequest(ShutdownRequest.type);
+        await Promise.race([
+          connection.sendRequest(ShutdownRequest.type),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error("shutdown timed out")), SHUTDOWN_TIMEOUT_MS);
+          }),
+        ]);
         connection.sendNotification(ExitNotification.type);
       } catch {
-        // server may have already exited
+        // timed out or server already exited
+      } finally {
+        if (timer) clearTimeout(timer);
       }
       connection.dispose();
     },

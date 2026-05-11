@@ -142,10 +142,42 @@ describe("LspClient", () => {
     // no assertion needed — test passes if no error is thrown
   });
 
+  it("ignores late diagnostics for a closed URI", async () => {
+    const uri = "file:///tmp/test-workspace/ghost.go";
+    const child = spawnFake({ diagnosticDelay: 200 });
+    const client = createLspClient(child);
+    await client.initialize("/tmp/test-workspace");
+
+    // open the document — triggers delayed publish after 200ms
+    client.didOpen(uri, "go", "package main");
+
+    // close immediately before diagnostics arrive
+    client.didClose(uri);
+
+    // wait enough time for the delayed publish to fire
+    await new Promise((r) => setTimeout(r, 500));
+
+    // the diagnostics handler should have ignored the publish for the closed URI
+    // re-open the URI: if ghost diagnostics leaked, the entry would already exist
+    // with stale data; a fresh didOpen should start clean
+    client.didOpen(uri, "go", "package main");
+    const result = await client.waitForDiagnostics(uri, 2000);
+    assert.equal(result.status, "ok");
+    // the fake server publishes fresh diagnostics on didOpen, so we get "fake error"
+    // the key assertion: we didn't accumulate ghost state from the closed-then-reopened cycle
+    assert.equal(result.diagnostics.length, 1);
+    assert.equal(result.diagnostics[0].message, "fake error");
+
+    await client.shutdown();
+  });
+
   it("collects other-file diagnostics", async () => {
     const uri = "file:///tmp/test-workspace/main.go";
     const otherUri = "file:///tmp/test-workspace/other.go";
     const child = spawnFake({
+      diagnosticsByUri: {
+        [otherUri]: [],
+      },
       otherFileDiagnostics: {
         [otherUri]: [
           {
@@ -159,6 +191,9 @@ describe("LspClient", () => {
     });
     const client = createLspClient(child);
     await client.initialize("/tmp/test-workspace");
+
+    client.didOpen(otherUri, "go", "package main");
+    await client.waitForDiagnostics(otherUri, 2000);
 
     client.didOpen(uri, "go", "package main");
 

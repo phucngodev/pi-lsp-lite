@@ -101,11 +101,11 @@ describe("ServerManager", () => {
     await writeFile(filePath, "content");
 
     const result1 = await manager.handleEdit(filePath, missingConfig, dir);
-    assert.equal(result1.status, "ok");
+    assert.equal(result1.status, "unavailable");
     assert.equal(result1.diagnostics.length, 0);
 
     const result2 = await manager.handleEdit(filePath, missingConfig, dir);
-    assert.equal(result2.status, "ok");
+    assert.equal(result2.status, "unavailable");
     assert.equal(result2.diagnostics.length, 0);
 
     assert.equal(manager.status().length, 0);
@@ -139,6 +139,42 @@ describe("ServerManager", () => {
     await manager.shutdownAll();
   });
 
+  it("init failure in one root does not prevent another root from starting", async () => {
+    const crashConfig: LanguageServerConfig = {
+      id: "fake-crash",
+      extensions: [".go"],
+      command: tsxPath,
+      args: [fakeServerPath, "--run", '--options={"crashOnInit":true}'],
+      rootPatterns: ["go.mod"],
+    };
+    const manager = createServerManager();
+    const dir = await makeTempDir();
+
+    const rootA = join(dir, "root-a");
+    const rootB = join(dir, "root-b");
+    await mkdir(rootA, { recursive: true });
+    await mkdir(rootB, { recursive: true });
+    await writeFile(join(rootA, "go.mod"), "module a");
+    await writeFile(join(rootB, "go.mod"), "module b");
+
+    const fileA = join(rootA, "main.go");
+    const fileB = join(rootB, "main.go");
+    await writeFile(fileA, "package main");
+    await writeFile(fileB, "package main");
+
+    // root A crashes on init
+    const resultA = await manager.handleEdit(fileA, crashConfig, dir);
+    assert.equal(resultA.status, "unavailable");
+    assert.equal(resultA.diagnostics.length, 0);
+
+    // root B should still work with a working config
+    const resultB = await manager.handleEdit(fileB, fakeConfig, dir);
+    assert.equal(resultB.status, "ok");
+    assert.ok(resultB.diagnostics.length > 0, "root B should produce diagnostics");
+
+    await manager.shutdownAll();
+  });
+
   it("shutdownAll kills all servers", async () => {
     const manager = createServerManager();
     const dir = await makeTempDir();
@@ -151,5 +187,30 @@ describe("ServerManager", () => {
 
     await manager.shutdownAll();
     assert.equal(manager.status().length, 0);
+  });
+
+  it("shutdownAll completes when server never responds to shutdown", async () => {
+    const neverShutdownConfig: LanguageServerConfig = {
+      id: "fake-hang",
+      extensions: [".go"],
+      command: tsxPath,
+      args: [fakeServerPath, "--run", '--options={"neverShutdown":true}'],
+      rootPatterns: ["go.mod"],
+    };
+    const manager = createServerManager();
+    const dir = await makeTempDir();
+    await writeFile(join(dir, "go.mod"), "module test");
+    const filePath = join(dir, "main.go");
+    await writeFile(filePath, "package main");
+
+    await manager.handleEdit(filePath, neverShutdownConfig, dir);
+    assert.equal(manager.status().length, 1);
+
+    const start = Date.now();
+    await manager.shutdownAll();
+    const elapsed = Date.now() - start;
+
+    assert.equal(manager.status().length, 0);
+    assert.ok(elapsed < 15_000, `shutdownAll took ${elapsed}ms, expected < 15s`);
   });
 });

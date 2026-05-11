@@ -22,6 +22,7 @@ export interface FakeServerOptions {
   otherFileDiagnostics?: Map<string, Diagnostic[]>;
   crashOnInit?: boolean;
   neverPublish?: boolean;
+  neverShutdown?: boolean;
 }
 
 const defaultDiagnostic: Diagnostic = {
@@ -35,6 +36,7 @@ export function startFakeServer(options: FakeServerOptions = {}) {
   const delay = options.diagnosticDelay ?? 0;
   const crashOnInit = options.crashOnInit ?? false;
   const neverPublish = options.neverPublish ?? false;
+  const neverShutdown = options.neverShutdown ?? false;
 
   const connection = createProtocolConnection(
     new StreamMessageReader(process.stdin),
@@ -69,6 +71,7 @@ export function startFakeServer(options: FakeServerOptions = {}) {
 
       if (options.otherFileDiagnostics) {
         for (const [otherUri, otherDiags] of options.otherFileDiagnostics) {
+          if (otherUri === uri) continue;
           connection.sendNotification(PublishDiagnosticsNotification.type, {
             uri: otherUri,
             diagnostics: otherDiags,
@@ -94,7 +97,10 @@ export function startFakeServer(options: FakeServerOptions = {}) {
 
   connection.onNotification(DidCloseTextDocumentNotification.type, () => {});
 
-  connection.onRequest(ShutdownRequest.type, () => null);
+  connection.onRequest(ShutdownRequest.type, () => {
+    if (neverShutdown) return new Promise(() => {});
+    return null;
+  });
   connection.onNotification(ExitNotification.type, () => {
     process.exit(0);
   });
@@ -110,6 +116,7 @@ if (process.argv.includes("--run")) {
     if (raw.diagnosticDelay) options.diagnosticDelay = raw.diagnosticDelay;
     if (raw.crashOnInit) options.crashOnInit = raw.crashOnInit;
     if (raw.neverPublish) options.neverPublish = raw.neverPublish;
+    if (raw.neverShutdown) options.neverShutdown = raw.neverShutdown;
     if (raw.diagnosticsByUri) {
       options.diagnosticsByUri = new Map(Object.entries(raw.diagnosticsByUri));
     }
