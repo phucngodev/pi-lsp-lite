@@ -1,6 +1,6 @@
 {
   "name": "pi-lsp-lite",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "pi extension: feeds LSP diagnostics back to the agent after every write/edit. Go, Rust, and TypeScript.",
   "type": "module",
   "private": false,

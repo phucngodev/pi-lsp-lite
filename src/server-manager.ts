@@ -33,7 +33,7 @@ export interface ServerStatus {
 }
 
 const IDLE_TIMEOUT_MS = 240_000;
-const DIAGNOSTIC_TIMEOUT_MS = 3_000;
+const DIAGNOSTIC_TIMEOUT_MS = 5_000;
 const INIT_TIMEOUT_MS = 10_000;
 const DOCUMENT_IDLE_MS = 120_000;
 const SWEEP_INTERVAL_MS = 60_000;
