@@ -1,11 +1,15 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { createServerManager } from "./src/server-manager.js";
-import { languageForFile } from "./src/languages.js";
+import { languageForFile, checkExtensionOverlaps } from "./src/languages.js";
 import { formatDiagnostics } from "./src/format.js";
 import { resolve, relative, isAbsolute } from "node:path";
 
 export default function (pi: ExtensionAPI) {
   const manager = createServerManager();
+
+  for (const warning of checkExtensionOverlaps()) {
+    console.error(`[pi-lsp-lite] ${warning}`);
+  }
 
   pi.on("tool_result", async (event, ctx) => {
     if (event.toolName !== "write" && event.toolName !== "edit") return;

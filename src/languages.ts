@@ -34,3 +34,19 @@ export function languageForFile(path: string): LanguageServerConfig | undefined 
   const lower = path.toLowerCase();
   return languages.find((lang) => lang.extensions.some((ext) => lower.endsWith(ext)));
 }
+
+export function checkExtensionOverlaps(): string[] {
+  const warnings: string[] = [];
+  const seen = new Map<string, string>();
+  for (const lang of languages) {
+    for (const ext of lang.extensions) {
+      const existing = seen.get(ext);
+      if (existing) {
+        warnings.push(`extension "${ext}" is claimed by both "${existing}" and "${lang.id}" — "${existing}" wins`);
+      } else {
+        seen.set(ext, lang.id);
+      }
+    }
+  }
+  return warnings;
+}

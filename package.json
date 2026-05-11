@@ -1,7 +1,7 @@
 {
   "name": "pi-lsp-lite",
   "version": "0.1.0",
-  "description": "Tightly scoped pi extension: feeds LSP diagnostics back to the agent after every write/edit. Go and Rust to start.",
+  "description": "pi extension: feeds LSP diagnostics back to the agent after every write/edit. Go, Rust, and TypeScript.",
   "type": "module",
   "private": false,
   "license": "MIT",
@@ -10,7 +10,8 @@
     "pi-extension",
     "lsp",
     "gopls",
-    "rust-analyzer"
+    "rust-analyzer",
+    "typescript-language-server"
   ],
   "pi": {
     "extensions": [
