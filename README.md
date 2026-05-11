@@ -1,6 +1,6 @@
 # pi-lsp-lite
 
-[pi](https://github.com/mariozechner/pi) extension that feeds LSP diagnostics back to the agent after every `write` and `edit`. Go and Rust via `gopls` and `rust-analyzer`.
+[pi](https://github.com/mariozechner/pi) extension that feeds LSP diagnostics back to the agent after every `write` and `edit`. Go, Rust, and TypeScript via `gopls`, `rust-analyzer`, and `typescript-language-server`.
 
 The agent sees errors and warnings inline on the same turn as the edit that caused them — no context switch, no separate command.
 
@@ -28,14 +28,15 @@ pi -e git:github.com/mcphailtom/pi-lsp-lite
 |--------|----------|---------|
 | `gopls` | Go | `go install golang.org/x/tools/gopls@latest` |
 | `rust-analyzer` | Rust | `rustup component add rust-analyzer` |
+| `typescript-language-server` | TypeScript/JavaScript | `npm install -g typescript-language-server typescript` |
 
 Servers must be on `PATH`. If a server is missing, that language is silently disabled for the session.
 
 ## What it does
 
-On every `write` or `edit` to a `.go` or `.rs` file:
+On every `write` or `edit` to a `.go`, `.rs`, `.ts`, `.tsx`, `.js`, or `.jsx` file:
 
-1. Finds the workspace root by walking up from the file to the nearest `go.mod` or `Cargo.toml` (bounded by the session's working directory)
+1. Finds the workspace root by walking up from the file to the nearest `go.mod`, `Cargo.toml`, `tsconfig.json`, or `package.json` (bounded by the session's working directory)
 2. Spawns a language server for that workspace if one isn't already running
 3. Sends the file content to the server (`textDocument/didOpen` or `textDocument/didChange`)
 4. Waits up to 3 seconds for `publishDiagnostics`
@@ -57,7 +58,7 @@ If the edit breaks other files in the workspace, a footer reports the count.
 - Auto-install language servers
 - Block edits on diagnostics — pure feedback, agent decides what to do
 - Format, autofix, or read-guard
-- Support languages beyond Go and Rust (adding one is a config entry in `src/languages.ts`)
+- Support languages beyond Go, Rust, and TypeScript (adding one is a config entry in `src/languages.ts`)
 
 ## Commands
 

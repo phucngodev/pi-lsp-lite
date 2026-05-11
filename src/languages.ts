@@ -21,6 +21,13 @@ export const languages: LanguageServerConfig[] = [
     args: [],
     rootPatterns: ["Cargo.toml"],
   },
+  {
+    id: "typescript",
+    extensions: [".ts", ".tsx", ".js", ".jsx"],
+    command: "typescript-language-server",
+    args: ["--stdio"],
+    rootPatterns: ["tsconfig.json", "package.json"],
+  },
 ];
 
 export function languageForFile(path: string): LanguageServerConfig | undefined {
