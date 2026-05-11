@@ -9,12 +9,14 @@ on every `write` and `edit`. Go and Rust to start.
 
 **Does:**
 - Spawn long-lived `gopls` / `rust-analyzer` subprocesses on demand (lazy start on first relevant edit)
+- Detect workspace root by walking up from edited file looking for `go.mod` / `Cargo.toml`
 - Send `textDocument/didOpen` and `textDocument/didChange` (full document sync) after each `write` / `edit` tool result
-- Collect `textDocument/publishDiagnostics` (errors + warnings) for the edited file
+- Collect `textDocument/publishDiagnostics` (errors + warnings) for the edited file and report cross-file impact
 - Append diagnostics to the tool result content so the agent sees them on the same turn
-- Idle-shutdown language servers after configurable timeout
+- Close idle documents after 120s via periodic sweep
+- Idle-shutdown language servers after 240s
 - Clean up all servers on `session_shutdown`
-- `/lsp-status` command for visibility
+- `/lsp-status` command for visibility (shows language, workspace root, PID, open files, uptime, idle time)
 
 **Does not:**
 - Auto-install language servers (gopls / rust-analyzer must be on PATH)
@@ -26,45 +28,74 @@ on every `write` and `edit`. Go and Rust to start.
 
 ```
 pi-lsp-lite/
-├── index.ts              ← extension entry: wires events, registers /lsp-status
-└── src/
-    ├── languages.ts      ← server config registry: binary name, args, file extensions, capabilities
-    ├── client.ts         ← thin JSON-RPC client over stdio: initialize handshake, didOpen/didChange, diagnostics collection
-    ├── server-manager.ts ← owns server lifecycle: lazy spawn, idle timeout, shutdown
-    └── format.ts         ← diagnostics → human-readable string for tool result injection
+├── index.ts               ← extension entry: tool_result hook, session_shutdown, /lsp-status
+├── src/
+│   ├── languages.ts       ← server config registry: binary, args, extensions, rootPatterns
+│   ├── client.ts          ← JSON-RPC protocol connection: initialize, didOpen/didChange/didClose, diagnostics with snapshot-diff
+│   ├── server-manager.ts  ← lifecycle: lazy spawn per language+root, idle timeout, periodic didClose sweep, serialized edits
+│   ├── format.ts          ← DiagnosticResult → readable text with cross-file footer
+│   └── util.ts            ← fileUri(), which(), findWorkspaceRoot()
+└── test/
+    ├── fake-server.ts     ← minimal JSON-RPC server for testing
+    ├── client.test.ts
+    ├── server-manager.test.ts
+    ├── format.test.ts
+    └── util.test.ts
 ```
 
 ## Design decisions
 
-### Diagnostics delivery: append to tool_result (1a)
+### Diagnostics delivery: append to tool_result
 
 Hook `tool_result` for `write` and `edit`. If the file matches a
 supported language, route through server-manager and append formatted
 diagnostics to the result content array. Agent sees them immediately on
 the same turn, attributed to the edit that caused them.
 
-Trade-off: muddies the original tool result slightly, but the feedback
-loop is tighter than injecting a separate message.
+### Document sync: full document
 
-### Document sync: full document (2a)
+Send the entire file content on every didOpen/didChange. Incremental
+sync would require converting edit tool oldText/newText into LSP-style
+ranges — fiddly and not worth the complexity.
 
-Send the entire file content on every didOpen/didChange. Simple and
-reliable. Incremental sync would require tracking document versions and
-converting edit tool oldText/newText into LSP-style ranges — fiddly and
-not worth the complexity for v1.
+### Workspace root detection
+
+Walk up from the edited file's directory looking for rootPattern markers
+(`go.mod`, `Cargo.toml`), bounded by the session's `cwd`. Different
+workspace roots spawn different servers (map key: `${languageId}:${root}`).
+Falls back to `cwd` when no marker is found.
+
+### Serialized edits per server
+
+Edits to the same server are serialized via a promise queue (`editQueue`)
+to prevent concurrent `waitForDiagnostics` races. Different servers
+(different languages or different workspace roots) run in parallel.
+
+### Cross-file diagnostics: snapshot-diff
+
+Before the edit settles, snapshot diagnostic counts for all tracked URIs.
+After the settle window (50ms), compare. Any file whose error/warning
+count increased is reported in a "plus N diagnostics in M other files"
+footer. Works for both new and already-open files.
+
+### Document lifecycle
+
+- `didOpen` on first edit to a file, `didChange` on subsequent edits
+- `didClose` sent by a periodic sweep (60s interval) for documents idle > 120s
+- Sweep timer is `.unref()`'d and starts/stops with server lifecycle
 
 ### Server lifecycle
 
 - **Lazy start**: first edit to a .go or .rs file triggers spawn + initialize handshake
-- **Idle timeout**: configurable (default 240s). Timer resets on each relevant edit. When it fires, send shutdown + exit to the server.
-- **Session shutdown**: kill all servers immediately via session_shutdown event handler.
+- **Idle timeout**: 240s default. Timer resets on each relevant edit. When it fires, send LSP shutdown + exit.
+- **Session shutdown**: kill all servers immediately via `session_shutdown` event handler.
 - **Missing binary**: log once on first attempt, disable that language for the session. No retry, no install prompt.
 
-### Workspace detection
+### Diagnostic result status
 
-Use `ctx.cwd` as the workspace root for the LSP `initialize` call.
-Single workspace per language server. If the user switches projects
-mid-session the server may give stale diagnostics — acceptable for v1.
+`DiagnosticResult` carries `status: "ok" | "timeout"` so the agent knows
+when results may be incomplete. Format.ts surfaces "timed out, may be
+incomplete" explicitly rather than showing an empty result that looks clean.
 
 ## Data flow
 
@@ -73,17 +104,21 @@ agent calls write/edit
   → pi executes tool
   → tool_result event fires
   → extension checks: is this a .go / .rs file?
-  → if no server running: spawn + initialize (blocking, with timeout)
+  → find workspace root (walk up for go.mod / Cargo.toml, bounded by cwd)
+  → if no server for this language+root: spawn + initialize (with 10s timeout)
+  → queue edit on server's editQueue (serialized)
+  → snapshot diagnostic counts for all tracked URIs
   → send didOpen (if first time) or didChange (full content)
-  → wait for publishDiagnostics notification (with timeout)
-  → filter to errors + warnings on the edited file
-  → format as readable text
+  → wait for publishDiagnostics notification (3s timeout, 50ms settle)
+  → compare diagnostic counts against snapshot for cross-file impact
+  → filter to errors + warnings
+  → format as readable text with optional cross-file footer
   → append to tool_result content
   → agent sees diagnostics inline
 ```
 
 ## Open questions
 
-- **Diagnostic wait timeout**: how long to wait for publishDiagnostics after didChange before giving up? Gopls is fast (~100ms), rust-analyzer can be slow on large projects. Start with 3s, make configurable.
-- **Multiple files per turn**: if the agent edits 3 files in one turn, each tool_result fires independently. Should be fine — each gets its own diagnostics.
-- **Workspace root heuristics**: could look for go.mod / Cargo.toml to set a better root. v1 just uses cwd.
+- **Per-language timeout config**: rust-analyzer may benefit from longer timeout on cold start
+- **On-demand diagnostics**: whether to add a `/lsp-diag` command for checking diagnostics without an edit trigger
+- **Incremental sync**: full document sync works but is wasteful on large files; would need LSP capability negotiation

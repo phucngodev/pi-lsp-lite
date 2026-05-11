@@ -1,5 +1,5 @@
 import { access, constants } from "node:fs/promises";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 
 export function fileUri(absolutePath: string): string {
@@ -7,6 +7,14 @@ export function fileUri(absolutePath: string): string {
 }
 
 export async function which(command: string): Promise<string | null> {
+  if (command.includes("/")) {
+    try {
+      await access(command, constants.X_OK);
+      return command;
+    } catch {
+      return null;
+    }
+  }
   const pathDirs = (process.env.PATH ?? "").split(":");
   for (const dir of pathDirs) {
     const candidate = join(dir, command);
@@ -16,4 +24,21 @@ export async function which(command: string): Promise<string | null> {
     } catch {}
   }
   return null;
+}
+
+export async function findWorkspaceRoot(filePath: string, rootPatterns: string[], cwd: string): Promise<string> {
+  let dir = dirname(filePath);
+  while (true) {
+    for (const pattern of rootPatterns) {
+      try {
+        await access(join(dir, pattern));
+        return dir;
+      } catch {}
+    }
+    if (dir === cwd) break;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return cwd;
 }

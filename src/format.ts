@@ -6,10 +6,14 @@ export function formatDiagnostics(filePath: string, result: DiagnosticResult): s
     (d) => d.severity === DiagnosticSeverity.Error || d.severity === DiagnosticSeverity.Warning,
   );
 
-  if (relevant.length === 0 && result.status === "ok") return "";
+  if (relevant.length === 0 && result.status === "ok" && result.otherFiles.length === 0) return "";
 
   if (relevant.length === 0 && result.status === "timeout") {
     return `\n⚠ LSP diagnostics for ${filePath}: timed out waiting for response (results may be incomplete)`;
+  }
+
+  if (relevant.length === 0 && result.otherFiles.length > 0) {
+    return `\n⚠ LSP diagnostics for ${filePath}: no issues${otherFilesFooter(result)}`;
   }
 
   const lines = relevant.map((d) => {
@@ -31,5 +35,12 @@ export function formatDiagnostics(filePath: string, result: DiagnosticResult): s
     .filter(Boolean)
     .join(", ");
 
-  return `\n⚠ LSP diagnostics for ${filePath} (${summary}):\n${lines.join("\n")}`;
+  return `\n⚠ LSP diagnostics for ${filePath} (${summary}):\n${lines.join("\n")}${otherFilesFooter(result)}`;
+}
+
+function otherFilesFooter(result: DiagnosticResult): string {
+  if (result.otherFiles.length === 0) return "";
+  const totalDiags = result.otherFiles.reduce((sum, f) => sum + f.errorCount + f.warningCount, 0);
+  const fileCount = result.otherFiles.length;
+  return `\n  + ${totalDiags} diagnostic${totalDiags !== 1 ? "s" : ""} in ${fileCount} other file${fileCount !== 1 ? "s" : ""}`;
 }

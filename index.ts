@@ -46,7 +46,7 @@ export default function (pi: ExtensionAPI) {
       const lines = servers.map((s) => {
         const idle = Math.round((Date.now() - s.lastActivity) / 1000);
         const up = Math.round(s.uptime / 1000);
-        return `${s.id} (pid ${s.pid}) — ${s.openDocuments} open files, up ${up}s, idle ${idle}s`;
+        return `${s.id} (pid ${s.pid}) root=${s.root} — ${s.openDocuments} open files, up ${up}s, idle ${idle}s`;
       });
       ctx.ui.notify(lines.join("\n"), "info");
     },

@@ -6,25 +6,46 @@ import {
   InitializedNotification,
   DidOpenTextDocumentNotification,
   DidChangeTextDocumentNotification,
+  DidCloseTextDocumentNotification,
   ShutdownRequest,
   ExitNotification,
   PublishDiagnosticsNotification,
+  DiagnosticSeverity,
   type InitializeParams,
   type Diagnostic,
 } from "vscode-languageserver-protocol/node.js";
 import type { ChildProcess } from "node:child_process";
 import { fileUri } from "./util.js";
 
-export type DiagnosticResult =
-  | { status: "ok"; diagnostics: Diagnostic[] }
-  | { status: "timeout"; diagnostics: Diagnostic[] };
+export interface OtherFileDiagnostics {
+  uri: string;
+  errorCount: number;
+  warningCount: number;
+}
+
+export interface DiagnosticResult {
+  status: "ok" | "timeout";
+  diagnostics: Diagnostic[];
+  otherFiles: OtherFileDiagnostics[];
+}
 
 export interface LspClient {
   initialize(workspaceRoot: string): Promise<void>;
   didOpen(uri: string, languageId: string, content: string): void;
   didChange(uri: string, content: string): void;
+  didClose(uri: string): void;
   waitForDiagnostics(uri: string, timeoutMs: number): Promise<DiagnosticResult>;
   shutdown(): Promise<void>;
+}
+
+function countDiagnostics(diags: Diagnostic[]): { errors: number; warnings: number } {
+  let errors = 0;
+  let warnings = 0;
+  for (const d of diags) {
+    if (d.severity === DiagnosticSeverity.Error) errors++;
+    else if (d.severity === DiagnosticSeverity.Warning) warnings++;
+  }
+  return { errors, warnings };
 }
 
 export function createLspClient(child: ChildProcess): LspClient {
@@ -102,29 +123,68 @@ export function createLspClient(child: ChildProcess): LspClient {
       });
     },
 
+    didClose(uri: string) {
+      connection.sendNotification(DidCloseTextDocumentNotification.type, {
+        textDocument: { uri },
+      });
+      diagnosticsMap.delete(uri);
+      documentVersion.delete(uri);
+    },
+
     async waitForDiagnostics(uri: string, timeoutMs: number): Promise<DiagnosticResult> {
+      // snapshot diagnostic counts for all other tracked URIs before the edit settles
+      const preSnapshot = new Map<string, { errors: number; warnings: number }>();
+      for (const [trackedUri, entry] of diagnosticsMap) {
+        if (trackedUri !== uri) {
+          preSnapshot.set(trackedUri, countDiagnostics(entry.diagnostics));
+        }
+      }
+
+      const collectOtherFiles = (): OtherFileDiagnostics[] => {
+        const result: OtherFileDiagnostics[] = [];
+        for (const [trackedUri, entry] of diagnosticsMap) {
+          if (trackedUri === uri) continue;
+          const post = countDiagnostics(entry.diagnostics);
+          const pre = preSnapshot.get(trackedUri) ?? { errors: 0, warnings: 0 };
+          const newErrors = post.errors - pre.errors;
+          const newWarnings = post.warnings - pre.warnings;
+          if (newErrors > 0 || newWarnings > 0) {
+            result.push({ uri: trackedUri, errorCount: newErrors, warningCount: newWarnings });
+          }
+        }
+        return result;
+      };
+
       return new Promise<DiagnosticResult>((resolve) => {
+        const SETTLE_MS = 50;
+        let settled = false;
+
+        const settle = (status: "ok" | "timeout") => {
+          if (settled) return;
+          settled = true;
+          setTimeout(() => {
+            resolve({
+              status,
+              diagnostics: diagnosticsMap.get(uri)?.diagnostics ?? [],
+              otherFiles: collectOtherFiles(),
+            });
+          }, SETTLE_MS);
+        };
+
         const timeout = setTimeout(() => {
-          const entry = diagnosticsMap.get(uri);
-          resolve({
-            status: "timeout",
-            diagnostics: entry?.diagnostics ?? [],
-          });
+          settle("timeout");
         }, timeoutMs);
 
         const entry = diagnosticsMap.get(uri) ?? { diagnostics: [], received: false };
         entry.resolve = () => {
           clearTimeout(timeout);
-          resolve({
-            status: "ok",
-            diagnostics: diagnosticsMap.get(uri)?.diagnostics ?? [],
-          });
+          settle("ok");
         };
         diagnosticsMap.set(uri, entry);
 
         if (entry.received) {
           clearTimeout(timeout);
-          resolve({ status: "ok", diagnostics: entry.diagnostics });
+          settle("ok");
         }
       });
     },

@@ -1,0 +1,155 @@
+import { describe, it, afterEach } from "node:test";
+import assert from "node:assert/strict";
+import { createServerManager } from "../src/server-manager.js";
+import type { LanguageServerConfig } from "../src/languages.js";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+import { writeFile, mkdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const fakeServerPath = join(__dirname, "fake-server.ts");
+
+const projectRoot = join(__dirname, "..");
+const tsxPath = join(projectRoot, "node_modules", ".bin", "tsx");
+
+const fakeConfig: LanguageServerConfig = {
+  id: "fake",
+  extensions: [".go"],
+  command: tsxPath,
+  args: [fakeServerPath, "--run"],
+  rootPatterns: ["go.mod"],
+};
+
+const missingConfig: LanguageServerConfig = {
+  id: "missing",
+  extensions: [".xyz"],
+  command: "nonexistent-lsp-server-binary-42",
+  args: [],
+  rootPatterns: [],
+};
+
+let tempDirs: string[] = [];
+
+async function makeTempDir(): Promise<string> {
+  const dir = join(tmpdir(), `pi-lsp-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  await mkdir(dir, { recursive: true });
+  tempDirs.push(dir);
+  return dir;
+}
+
+afterEach(async () => {
+  for (const dir of tempDirs) {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+  tempDirs = [];
+});
+
+describe("ServerManager", () => {
+  it("first edit spawns server, second reuses it", async () => {
+    const manager = createServerManager();
+    const dir = await makeTempDir();
+    await writeFile(join(dir, "go.mod"), "module test");
+    const filePath = join(dir, "main.go");
+    await writeFile(filePath, "package main");
+
+    const result1 = await manager.handleEdit(filePath, fakeConfig, dir);
+    assert.equal(result1.status, "ok");
+
+    const status1 = manager.status();
+    assert.equal(status1.length, 1);
+
+    await writeFile(filePath, "package main\n");
+    const result2 = await manager.handleEdit(filePath, fakeConfig, dir);
+    assert.equal(result2.status, "ok");
+
+    const status2 = manager.status();
+    assert.equal(status2.length, 1);
+    assert.equal(status2[0].pid, status1[0].pid);
+
+    await manager.shutdownAll();
+  });
+
+  it("concurrent first edits don't spawn duplicate servers", async () => {
+    const manager = createServerManager();
+    const dir = await makeTempDir();
+    await writeFile(join(dir, "go.mod"), "module test");
+    const file1 = join(dir, "a.go");
+    const file2 = join(dir, "b.go");
+    await writeFile(file1, "package main");
+    await writeFile(file2, "package main");
+
+    const [r1, r2] = await Promise.all([
+      manager.handleEdit(file1, fakeConfig, dir),
+      manager.handleEdit(file2, fakeConfig, dir),
+    ]);
+
+    assert.equal(r1.status, "ok");
+    assert.equal(r2.status, "ok");
+
+    const status = manager.status();
+    assert.equal(status.length, 1);
+
+    await manager.shutdownAll();
+  });
+
+  it("missing binary disables language permanently", async () => {
+    const manager = createServerManager();
+    const dir = await makeTempDir();
+    const filePath = join(dir, "main.xyz");
+    await writeFile(filePath, "content");
+
+    const result1 = await manager.handleEdit(filePath, missingConfig, dir);
+    assert.equal(result1.status, "ok");
+    assert.equal(result1.diagnostics.length, 0);
+
+    const result2 = await manager.handleEdit(filePath, missingConfig, dir);
+    assert.equal(result2.status, "ok");
+    assert.equal(result2.diagnostics.length, 0);
+
+    assert.equal(manager.status().length, 0);
+
+    await manager.shutdownAll();
+  });
+
+  it("different workspace roots get different servers", async () => {
+    const manager = createServerManager();
+    const dir = await makeTempDir();
+
+    const mod1 = join(dir, "mod1");
+    const mod2 = join(dir, "mod2");
+    await mkdir(mod1, { recursive: true });
+    await mkdir(mod2, { recursive: true });
+
+    await writeFile(join(mod1, "go.mod"), "module mod1");
+    await writeFile(join(mod2, "go.mod"), "module mod2");
+
+    const file1 = join(mod1, "main.go");
+    const file2 = join(mod2, "main.go");
+    await writeFile(file1, "package main");
+    await writeFile(file2, "package main");
+
+    await manager.handleEdit(file1, fakeConfig, dir);
+    await manager.handleEdit(file2, fakeConfig, dir);
+
+    const status = manager.status();
+    assert.equal(status.length, 2);
+
+    await manager.shutdownAll();
+  });
+
+  it("shutdownAll kills all servers", async () => {
+    const manager = createServerManager();
+    const dir = await makeTempDir();
+    await writeFile(join(dir, "go.mod"), "module test");
+    const filePath = join(dir, "main.go");
+    await writeFile(filePath, "package main");
+
+    await manager.handleEdit(filePath, fakeConfig, dir);
+    assert.equal(manager.status().length, 1);
+
+    await manager.shutdownAll();
+    assert.equal(manager.status().length, 0);
+  });
+});

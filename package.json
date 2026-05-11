@@ -5,9 +5,17 @@
   "type": "module",
   "private": false,
   "license": "MIT",
-  "keywords": ["pi-package", "pi-extension", "lsp", "gopls", "rust-analyzer"],
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "lsp",
+    "gopls",
+    "rust-analyzer"
+  ],
   "pi": {
-    "extensions": ["./index.ts"]
+    "extensions": [
+      "./index.ts"
+    ]
   },
   "dependencies": {
     "vscode-languageserver-protocol": "^3.17.5"
@@ -18,9 +26,11 @@
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
+    "tsx": "^4.21.0",
     "typescript": "^5.4.0"
   },
   "scripts": {
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts"
   }
 }

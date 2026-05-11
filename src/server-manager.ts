@@ -1,18 +1,20 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { which, fileUri } from "./util.js";
+import { which, fileUri, findWorkspaceRoot } from "./util.js";
 import { createLspClient, type LspClient, type DiagnosticResult } from "./client.js";
 import type { LanguageServerConfig } from "./languages.js";
-import type { Diagnostic } from "vscode-languageserver-protocol";
 import { readFile } from "node:fs/promises";
 
 interface ManagedServer {
   config: LanguageServerConfig;
+  serverKey: string;
+  root: string;
   process: ChildProcess;
   client: LspClient;
-  openDocuments: Set<string>;
+  openDocuments: Map<string, number>;
   idleTimer: ReturnType<typeof setTimeout> | null;
   startTime: number;
   lastActivity: number;
+  editQueue: Promise<DiagnosticResult>;
 }
 
 export interface ServerManager {
@@ -23,6 +25,7 @@ export interface ServerManager {
 
 export interface ServerStatus {
   id: string;
+  root: string;
   pid: number;
   uptime: number;
   openDocuments: number;
@@ -32,11 +35,37 @@ export interface ServerStatus {
 const IDLE_TIMEOUT_MS = 240_000;
 const DIAGNOSTIC_TIMEOUT_MS = 3_000;
 const INIT_TIMEOUT_MS = 10_000;
+const DOCUMENT_IDLE_MS = 120_000;
+const SWEEP_INTERVAL_MS = 60_000;
 
 export function createServerManager(): ServerManager {
   const servers = new Map<string, ManagedServer>();
   const pending = new Map<string, Promise<ManagedServer | null>>();
   const disabledLanguages = new Set<string>();
+  let sweepTimer: ReturnType<typeof setInterval> | null = null;
+
+  function startSweepTimer() {
+    if (sweepTimer) return;
+    sweepTimer = setInterval(() => {
+      const now = Date.now();
+      for (const server of servers.values()) {
+        const stale = [...server.openDocuments.entries()]
+          .filter(([, lastActive]) => now - lastActive > DOCUMENT_IDLE_MS);
+        for (const [docUri] of stale) {
+          server.client.didClose(docUri);
+          server.openDocuments.delete(docUri);
+        }
+      }
+    }, SWEEP_INTERVAL_MS);
+    sweepTimer.unref();
+  }
+
+  function stopSweepTimer() {
+    if (sweepTimer) {
+      clearInterval(sweepTimer);
+      sweepTimer = null;
+    }
+  }
 
   function resetIdleTimer(server: ManagedServer) {
     if (server.idleTimer) clearTimeout(server.idleTimer);
@@ -46,35 +75,38 @@ export function createServerManager(): ServerManager {
 
   async function shutdownServer(server: ManagedServer) {
     if (server.idleTimer) clearTimeout(server.idleTimer);
-    if (servers.get(server.config.id) === server) {
-      servers.delete(server.config.id);
+    if (servers.get(server.serverKey) === server) {
+      servers.delete(server.serverKey);
     }
     try {
       await server.client.shutdown();
     } catch {
       server.process.kill("SIGTERM");
     }
+    if (servers.size === 0) stopSweepTimer();
   }
 
-  async function spawnServer(config: LanguageServerConfig, cwd: string): Promise<ManagedServer | null> {
+  async function spawnServer(config: LanguageServerConfig, root: string, serverKey: string): Promise<ManagedServer | null> {
     if (disabledLanguages.has(config.id)) return null;
 
     const binaryPath = await which(config.command);
     if (!binaryPath) {
-      console.error(`[pi-lsp-lite] ${config.command} not found on PATH, disabling ${config.id}`);
+      console.error(`[pi-lsp-lite:${config.id}] ${config.command} not found on PATH, disabling ${config.id}`);
       disabledLanguages.add(config.id);
       return null;
     }
 
     const child = spawn(binaryPath, config.args, {
-      cwd,
+      cwd: root,
       stdio: ["pipe", "pipe", "pipe"],
     });
 
-    child.stderr?.on("data", () => {});
+    child.stderr?.on("data", (chunk: Buffer) => {
+      console.error(`[pi-lsp-lite:${config.id}:${root}]`, chunk.toString().trimEnd());
+    });
 
     child.on("error", (err) => {
-      console.error(`[pi-lsp-lite] ${config.id} process error:`, err);
+      console.error(`[pi-lsp-lite:${config.id}:${root}] process error:`, err);
     });
 
     const client = createLspClient(child);
@@ -85,11 +117,11 @@ export function createServerManager(): ServerManager {
     });
 
     try {
-      await Promise.race([client.initialize(cwd), timeoutPromise]);
+      await Promise.race([client.initialize(root), timeoutPromise]);
       clearTimeout(initTimer!);
     } catch (err) {
       clearTimeout(initTimer!);
-      console.error(`[pi-lsp-lite] failed to initialize ${config.id}:`, err);
+      console.error(`[pi-lsp-lite:${config.id}:${root}] failed to initialize:`, err);
       child.kill("SIGTERM");
       disabledLanguages.add(config.id);
       return null;
@@ -98,62 +130,80 @@ export function createServerManager(): ServerManager {
     const now = Date.now();
     const server: ManagedServer = {
       config,
+      serverKey,
+      root,
       process: child,
       client,
-      openDocuments: new Set(),
+      openDocuments: new Map(),
       idleTimer: null,
       startTime: now,
       lastActivity: now,
+      editQueue: Promise.resolve({ status: "ok", diagnostics: [], otherFiles: [] }),
     };
 
     child.on("exit", () => {
-      if (servers.get(config.id) === server) {
-        servers.delete(config.id);
+      if (servers.get(serverKey) === server) {
+        servers.delete(serverKey);
       }
+      if (servers.size === 0) stopSweepTimer();
     });
 
     resetIdleTimer(server);
-    servers.set(config.id, server);
+    servers.set(serverKey, server);
+    startSweepTimer();
     return server;
   }
 
-  async function ensureServer(config: LanguageServerConfig, cwd: string): Promise<ManagedServer | null> {
-    const existing = servers.get(config.id);
+  async function ensureServer(config: LanguageServerConfig, root: string): Promise<ManagedServer | null> {
+    const serverKey = `${config.id}:${root}`;
+    const existing = servers.get(serverKey);
     if (existing) return existing;
 
     if (disabledLanguages.has(config.id)) return null;
 
-    const inflight = pending.get(config.id);
+    const inflight = pending.get(serverKey);
     if (inflight) return inflight;
 
-    const promise = spawnServer(config, cwd).finally(() => pending.delete(config.id));
-    pending.set(config.id, promise);
+    const promise = spawnServer(config, root, serverKey).finally(() => pending.delete(serverKey));
+    pending.set(serverKey, promise);
     return promise;
+  }
+
+  async function doEdit(server: ManagedServer, filePath: string): Promise<DiagnosticResult> {
+    resetIdleTimer(server);
+
+    const uri = fileUri(filePath);
+    const content = await readFile(filePath, "utf-8");
+
+    if (server.openDocuments.has(uri)) {
+      server.client.didChange(uri, content);
+    } else {
+      server.client.didOpen(uri, server.config.id, content);
+    }
+    server.openDocuments.set(uri, Date.now());
+
+    return server.client.waitForDiagnostics(uri, DIAGNOSTIC_TIMEOUT_MS);
   }
 
   return {
     async handleEdit(filePath: string, config: LanguageServerConfig, cwd: string): Promise<DiagnosticResult> {
-      const server = await ensureServer(config, cwd);
-      if (!server) return { status: "ok", diagnostics: [] };
+      const root = await findWorkspaceRoot(filePath, config.rootPatterns, cwd);
+      const server = await ensureServer(config, root);
+      if (!server) return { status: "ok", diagnostics: [], otherFiles: [] };
 
-      resetIdleTimer(server);
-
-      const uri = fileUri(filePath);
-      const content = await readFile(filePath, "utf-8");
-
-      if (server.openDocuments.has(uri)) {
-        server.client.didChange(uri, content);
-      } else {
-        server.openDocuments.add(uri);
-        server.client.didOpen(uri, config.id, content);
-      }
-
-      return server.client.waitForDiagnostics(uri, DIAGNOSTIC_TIMEOUT_MS);
+      // serialize edits per server to avoid concurrent waitForDiagnostics races
+      const result = server.editQueue.then(
+        () => doEdit(server, filePath),
+        () => doEdit(server, filePath),
+      );
+      server.editQueue = result;
+      return result;
     },
 
     status(): ServerStatus[] {
       return Array.from(servers.values()).map((s) => ({
         id: s.config.id,
+        root: s.root,
         pid: s.process.pid ?? 0,
         uptime: Date.now() - s.startTime,
         openDocuments: s.openDocuments.size,
@@ -162,6 +212,7 @@ export function createServerManager(): ServerManager {
     },
 
     async shutdownAll() {
+      stopSweepTimer();
       const shutdowns = Array.from(servers.values()).map((s) => shutdownServer(s));
       await Promise.allSettled(shutdowns);
     },
