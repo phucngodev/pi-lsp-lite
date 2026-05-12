@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { which, fileUri, findWorkspaceRoot } from "./util.js";
 import { createLspClient, type LspClient, type DiagnosticResult } from "./client.js";
 import type { LanguageServerConfig } from "./languages.js";
+import { DEFAULT_DIAGNOSTIC_TIMEOUT, DEFAULT_DOCUMENT_IDLE_TIMEOUT } from "./config.js";
 import { readFile } from "node:fs/promises";
 
 interface ManagedServer {
@@ -33,12 +34,19 @@ export interface ServerStatus {
 }
 
 const IDLE_TIMEOUT_MS = 240_000;
-const DIAGNOSTIC_TIMEOUT_MS = 5_000;
 const INIT_TIMEOUT_MS = 10_000;
-const DOCUMENT_IDLE_MS = 120_000;
 const SWEEP_INTERVAL_MS = 60_000;
 
-export function createServerManager(): ServerManager {
+export interface ServerManagerOptions {
+  diagnosticTimeout?: number;
+  documentIdleTimeout?: number;
+  perServerTimeout?: Map<string, number>;
+}
+
+export function createServerManager(options: ServerManagerOptions = {}): ServerManager {
+  const diagnosticTimeout = options.diagnosticTimeout ?? DEFAULT_DIAGNOSTIC_TIMEOUT;
+  const documentIdleTimeout = options.documentIdleTimeout ?? DEFAULT_DOCUMENT_IDLE_TIMEOUT;
+  const perServerTimeout = options.perServerTimeout ?? new Map();
   const servers = new Map<string, ManagedServer>();
   const pending = new Map<string, Promise<ManagedServer | null>>();
   const disabledBinaries = new Set<string>();
@@ -51,7 +59,7 @@ export function createServerManager(): ServerManager {
       const now = Date.now();
       for (const server of servers.values()) {
         const stale = [...server.openDocuments.entries()]
-          .filter(([, lastActive]) => now - lastActive > DOCUMENT_IDLE_MS);
+          .filter(([, lastActive]) => now - lastActive > documentIdleTimeout);
         for (const [docUri] of stale) {
           server.client.didClose(docUri);
           server.openDocuments.delete(docUri);
@@ -202,7 +210,7 @@ export function createServerManager(): ServerManager {
     }
     server.openDocuments.set(uri, Date.now());
 
-    return server.client.waitForDiagnostics(uri, DIAGNOSTIC_TIMEOUT_MS);
+    return server.client.waitForDiagnostics(uri, perServerTimeout.get(server.config.id) ?? diagnosticTimeout);
   }
 
   return {

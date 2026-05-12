@@ -4,7 +4,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createServerManager } from "../../src/server-manager.js";
-import { languages } from "../../src/languages.js";
+import { builtinLanguages as languages } from "../../src/languages.js";
 
 const goConfig = languages.find((l) => l.id === "go")!;
 
