@@ -1,112 +1,111 @@
 # pi-lsp-lite
 
-Just LSP diagnostics for [pi](https://github.com/mariozechner/pi) — errors and warnings on every edit, same turn. Go, Rust, TypeScript, Python, C/C++.
+[![CI](https://img.shields.io/github/actions/workflow/status/mcphailtom/pi-lsp-lite/ci.yml?branch=main&label=CI)](https://github.com/mcphailtom/pi-lsp-lite/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/pi-lsp-lite)](https://www.npmjs.com/package/pi-lsp-lite)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+Your agent can't see compiler errors. Now it can.
+
+[pi](https://github.com/mariozechner/pi) extension that runs language servers in the background and feeds diagnostics back inline after every edit. Errors appear on the same turn — no context switch, no separate command.
+
+**Go · Rust · TypeScript · Python · C/C++**
 
 ## Install
-
-```bash
-pi install git:github.com/mcphailtom/pi-lsp-lite
-```
-
-Or from npm:
 
 ```bash
 pi install npm:pi-lsp-lite
 ```
 
-## Prerequisites
+That's it. If you have `gopls`, `rust-analyzer`, `typescript-language-server`, `pylsp`, or `clangd` on PATH, diagnostics start flowing automatically.
 
-Language servers must be on `PATH`. If missing, that language is silently disabled.
+## What you see
+
+```
+  edit ─ src/main.go
+  ✓ Edited src/main.go (replaced 2 lines)
+
+  ⚠ LSP diagnostics for src/main.go (2 errors):
+    error 12:5 [compiler] undefined: foo
+    error 18:2 [compiler] too many arguments in call to bar
+    + 1 diagnostic in 1 other file
+```
+
+The agent sees these too — they're appended to the tool result, so it can self-correct on the same turn.
+
+## Commands
+
+| Command | What it does |
+|---------|-------------|
+| `/lsp-status` | Show running servers, PIDs, workspace roots, uptime |
+| `/lsp-diag` | Show all current diagnostics (or `/lsp-diag path/to/file` for one file) |
+| `/lsp-add` | Interactively add a new language server |
+| `/lsp-remove` | Disable a configured server |
+| `/lsp-toggle` | Flip a server on/off without removing config |
+| `/lsp-install` | Install a missing server binary |
+
+## Supported servers
 
 | Server | Language | Install |
 |--------|----------|---------|
 | `gopls` | Go | `go install golang.org/x/tools/gopls@latest` |
 | `rust-analyzer` | Rust | `rustup component add rust-analyzer` |
-| `typescript-language-server` | TypeScript/JavaScript | `npm install -g typescript-language-server typescript` |
+| `typescript-language-server` | TypeScript/JS | `npm install -g typescript-language-server typescript` |
 | `pylsp` | Python | `pip install python-lsp-server` |
-| `clangd` | C/C++ | Included with Xcode CLI tools / `apt install clangd` |
+| `clangd` | C/C++ | Xcode CLI tools / `apt install clangd` |
 
-## Usage
-
-No configuration needed. Once installed, diagnostics appear automatically after every `write` or `edit` to a supported file:
-
-```
-⚠ LSP diagnostics for main.go (2 errors):
-  error 12:5 [compiler] undefined: foo
-  error 18:2 [compiler] too many arguments in call to bar
-  + 1 diagnostic in 1 other file
-```
-
-Use `/lsp-status` to see running servers. Use `/lsp-diag` to see all current diagnostics across tracked files, or `/lsp-diag path/to/file` for a specific file.
-
-Manage servers interactively:
-
-- `/lsp-add` — add a new language server to your global config
-- `/lsp-remove` — disable a configured server
-- `/lsp-toggle` — enable or disable a server without removing its config
-- `/lsp-install` — install a missing server binary (from a built-in registry of install commands)
-
-## Configuration
-
-Works out of the box with built-in defaults. To add servers, override settings, or disable languages, create a config file:
-
-**Project-level** (`.pi-lsp-lite.json` or `.pi/lsp-lite.json` in project root):
+Missing a server? `/lsp-add` lets you configure any LSP server that speaks stdio. Or add it to `.pi-lsp-lite.json`:
 
 ```json
 {
   "servers": {
-    "python": {
-      "extensions": [".py"],
-      "command": "pylsp",
-      "args": [],
-      "rootPatterns": ["pyproject.toml", "setup.py"]
-    },
-    "typescript": {
-      "disabled": true
-    },
-    "rust": {
-      "diagnosticTimeout": 8000
+    "haskell": {
+      "extensions": [".hs"],
+      "command": "haskell-language-server-wrapper",
+      "args": ["--lsp"],
+      "rootPatterns": ["cabal.project", "stack.yaml"]
     }
-  },
-  "diagnosticTimeout": 5000,
-  "documentIdleTimeout": 120000
+  }
 }
 ```
 
-**Global** (`~/.pi-lsp-lite.json`) — same format, applies to all projects. Project config merges over global.
+## Configuration
+
+Works without config. For customisation, create `.pi-lsp-lite.json` (project) or `~/.pi-lsp-lite.json` (global):
 
 | Field | Description | Default |
 |-------|-------------|---------|
-| `servers.<id>.extensions` | File extensions to match | (required for new servers) |
-| `servers.<id>.command` | Binary name or path | (required for new servers) |
-| `servers.<id>.args` | CLI arguments | `[]` |
-| `servers.<id>.rootPatterns` | Files that mark workspace root | `[]` |
-| `servers.<id>.diagnosticTimeout` | Per-server timeout per attempt (ms) | global default |
+| `servers.<id>.diagnosticTimeout` | Per-attempt timeout (ms) | per-language |
 | `servers.<id>.maxRetries` | Retry attempts on timeout (0-10) | `3` |
 | `servers.<id>.disabled` | Disable this server | `false` |
-| `diagnosticTimeout` | Default diagnostic wait (ms) | `5000` |
+| `diagnosticTimeout` | Global default timeout (ms) | `5000` |
 | `documentIdleTimeout` | Close idle documents after (ms) | `120000` |
 
-Partial overrides work — only the fields you specify are changed.
+Project config merges over global. Partial overrides work — only specify what you want to change.
 
 ## How it works
 
-Edits trigger `textDocument/didOpen` or `textDocument/didChange` against a long-lived language server. Diagnostics are collected within a configurable per-attempt timeout. If the server doesn't respond in time, the edit is retried with exponential backoff (up to `maxRetries` times, default 3) before giving up. Results are appended to the tool result. Workspace roots are detected automatically (`go.mod`, `Cargo.toml`, `tsconfig.json`, `package.json`, `pyproject.toml`, `compile_commands.json`).
+1. Agent writes/edits a file
+2. Extension detects the language, finds the workspace root
+3. Spawns (or reuses) an LSP server for that language + root
+4. Sends `didChange`, waits for `publishDiagnostics`
+5. If timeout: retries with exponential backoff + jitter (up to `maxRetries` times)
+6. Filters to errors + warnings, formats, appends to tool result + shows in TUI
 
-See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for internals.
+Cross-file impact is detected via snapshot-diff: if editing `lib.ts` breaks `caller.ts`, you see "+ N diagnostics in M other files".
+
+Servers are lazy (spawn on first edit), idle-shutdown after 240s, and clean up on session end.
 
 ## Development
 
 ```bash
 git clone https://github.com/mcphailtom/pi-lsp-lite
-cd pi-lsp-lite
-npm install
-npm run check        # typecheck
-npm test             # unit tests
-npm run test:integration  # requires servers on PATH
+cd pi-lsp-lite && npm install
+npm run check              # typecheck
+npm test                   # unit tests (106, no servers needed)
+npm run test:integration   # real server tests (needs servers on PATH)
 ```
 
-See [CONTRIBUTING.md](docs/CONTRIBUTING.md) for details.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md).
 
 ## License
 
