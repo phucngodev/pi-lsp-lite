@@ -14,7 +14,7 @@ describe("clangd integration", { skip: !process.env.INTEGRATION }, () => {
   let dir: string;
 
   before(async () => {
-    manager = createServerManager();
+    manager = createServerManager({ maxRetries: 0 });
     dir = join(tmpdir(), `pi-lsp-cpp-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, "compile_commands.json"), JSON.stringify([
@@ -36,7 +36,7 @@ describe("clangd integration", { skip: !process.env.INTEGRATION }, () => {
     await writeFile(join(dir, "main.c"), '#include <stdio.h>\nint main(void) {\n    printf("hello\\n");\n    return 0;\n}\n');
 
     let result: Awaited<ReturnType<typeof manager.handleEdit>> | undefined;
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 15; i++) {
       result = await manager.handleEdit(join(dir, "main.c"), cppConfig, dir);
       const hasErrors = result.diagnostics.some((d) => d.severity === 1);
       if (!hasErrors) break;
@@ -51,8 +51,15 @@ describe("clangd integration", { skip: !process.env.INTEGRATION }, () => {
   it("reports syntax error", async () => {
     await writeFile(join(dir, "main.c"), "int main( { return 0; }\n");
 
-    const result = await manager.handleEdit(join(dir, "main.c"), cppConfig, dir);
-    assert.equal(result.status, "ok");
-    assert.ok(result.diagnostics.length > 0, "expected at least one diagnostic for syntax error");
+    let result: Awaited<ReturnType<typeof manager.handleEdit>> | undefined;
+    for (let i = 0; i < 15; i++) {
+      result = await manager.handleEdit(join(dir, "main.c"), cppConfig, dir);
+      if (result.diagnostics.some((d) => d.severity === 1)) break;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+
+    assert.ok(result, "expected a result");
+    assert.equal(result!.status, "ok");
+    assert.ok(result!.diagnostics.some((d) => d.severity === 1), "expected at least one error diagnostic for syntax error");
   });
 });
