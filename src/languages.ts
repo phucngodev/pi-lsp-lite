@@ -29,8 +29,8 @@ export const builtinLanguages: LanguageServerConfig[] = [
   {
     id: "typescript",
     extensions: [".ts", ".tsx", ".js", ".jsx"],
-    command: "typescript-language-server",
-    args: ["--stdio"],
+    command: "tsgo",
+    args: ["--lsp", "--stdio"],
     rootPatterns: ["tsconfig.json", "package.json"],
     diagnosticTimeout: 30_000,
     languageIds: { ".tsx": "typescriptreact", ".js": "javascript", ".jsx": "javascriptreact" },
@@ -50,11 +50,21 @@ export const builtinLanguages: LanguageServerConfig[] = [
     args: [],
     rootPatterns: ["compile_commands.json", "CMakeLists.txt", ".clangd"],
     diagnosticTimeout: 15_000,
-    languageIds: { ".c": "c", ".h": "c", ".cc": "cpp", ".cxx": "cpp", ".hpp": "cpp", ".hxx": "cpp" },
+    languageIds: {
+      ".c": "c",
+      ".h": "c",
+      ".cc": "cpp",
+      ".cxx": "cpp",
+      ".hpp": "cpp",
+      ".hxx": "cpp",
+    },
   },
 ];
 
-export function languageForFile(path: string, configs: LanguageServerConfig[]): LanguageServerConfig | undefined {
+export function languageForFile(
+  path: string,
+  configs: LanguageServerConfig[],
+): LanguageServerConfig | undefined {
   const lower = path.toLowerCase();
   return configs.find((lang) => lang.extensions.some((ext) => lower.endsWith(ext)));
 }
@@ -74,7 +84,9 @@ export function checkExtensionOverlaps(configs: LanguageServerConfig[]): string[
     for (const ext of lang.extensions) {
       const existing = seen.get(ext);
       if (existing) {
-        warnings.push(`extension "${ext}" is claimed by both "${existing}" and "${lang.id}" — "${existing}" wins`);
+        warnings.push(
+          `extension "${ext}" is claimed by both "${existing}" and "${lang.id}" — "${existing}" wins`,
+        );
       } else {
         seen.set(ext, lang.id);
       }
